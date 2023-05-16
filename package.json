@@ -3,7 +3,7 @@
 	"displayName": "markdownlint",
 	"description": "Markdown linting and style checking for Visual Studio Code",
 	"icon": "images/markdownlint-128.png",
-	"version": "0.49.0",
+	"version": "0.50.0",
 	"author": "David Anson (https://dlaa.me/)",
 	"publisher": "DavidAnson",
 	"sponsor": {
@@ -21,8 +21,8 @@
 	"scripts": {
 		"compile": "webpack --mode production",
 		"compile-debug": "webpack --mode none",
-		"docker-npm-install": "docker run --rm --tty --name npm-install --volume $PWD:/home/workdir --workdir /home/workdir --user node node:16 npm install",
-		"docker-npm-run-upgrade": "docker run --rm --tty --name npm-run-upgrade --volume $PWD:/home/workdir --workdir /home/workdir --user node node:16 npm run upgrade",
+		"docker-npm-install": "docker run --rm --tty --name npm-install --volume $PWD:/home/workdir --workdir /home/workdir --user node node:latest npm install",
+		"docker-npm-run-upgrade": "docker run --rm --tty --name npm-run-upgrade --volume $PWD:/home/workdir --workdir /home/workdir --user node node:latest npm run upgrade",
 		"lint": "eslint --ignore-pattern bundle.js --ignore-pattern bundle.web.js *.js && markdownlint-cli2 *.md",
 		"schema": "cpy ./node_modules/markdownlint/schema/markdownlint-config-schema.json . --flat && node expand-config-schema.js && node generate-config-schema.js",
 		"test": "npm run lint && npm run compile && npm run schema && git diff --exit-code",
@@ -34,7 +34,7 @@
 	],
 	"engines": {
 		"node": ">=14",
-		"vscode": "^1.66.0"
+		"vscode": "^1.75.0"
 	},
 	"main": "./bundle",
 	"browser": "./bundle.web",
@@ -43,24 +43,23 @@
 		"js-yaml": "4.1.0",
 		"jsonc-parser": "3.2.0",
 		"markdown-it-texmath": "1.0.0",
-		"markdownlint": "0.27.0",
-		"markdownlint-cli2": "0.6.0",
-		"minimatch": "5.1.2"
+		"markdownlint-cli2": "0.7.1",
+		"minimatch": "9.0.0"
 	},
 	"devDependencies": {
-		"@types/vscode": "1.66.0",
+		"@types/vscode": "1.75.0",
 		"cpy-cli": "4.2.0",
-		"eslint": "8.31.0",
+		"eslint": "8.40.0",
 		"eslint-plugin-node": "11.1.0",
-		"eslint-plugin-unicorn": "45.0.2",
+		"eslint-plugin-unicorn": "47.0.0",
 		"path-browserify": "1.0.1",
 		"process": "0.11.10",
 		"stream-browserify": "3.0.0",
-		"terser-webpack-plugin": "5.3.6",
+		"terser-webpack-plugin": "5.3.8",
 		"util": "0.12.5",
 		"vsce": "2.15.0",
-		"webpack": "5.75.0",
-		"webpack-cli": "5.0.1"
+		"webpack": "5.82.0",
+		"webpack-cli": "5.1.0"
 	},
 	"keywords": [
 		"markdown",
@@ -70,11 +69,7 @@
 		"multi-root ready"
 	],
 	"activationEvents": [
-		"onLanguage:markdown",
-		"onCommand:markdownlint.fixAll",
-		"onCommand:markdownlint.lintWorkspace",
-		"onCommand:markdownlint.openConfigFile",
-		"onCommand:markdownlint.toggleLinting"
+		"onLanguage:markdown"
 	],
 	"capabilities": {
 		"untrustedWorkspaces": {
@@ -87,6 +82,14 @@
 		}
 	},
 	"contributes": {
+		"languages": [
+			{
+				"id": "ignore",
+				"filenames": [
+					".markdownlintignore"
+				]
+			}
+		],
 		"commands": [
 			{
 				"command": "markdownlint.fixAll",

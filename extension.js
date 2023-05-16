@@ -1,9 +1,15 @@
 "use strict";
 
-// Minimal requires (requires that may not be needed are inlined to avoid startup cost)
+// Minimal requires (requires that may not be needed are inlined to reduce startup cost)
 const vscode = require("vscode");
+const os = require("node:os");
 const path = require("node:path");
 const {promisify} = require("node:util");
+const {"main": markdownlintCli2} = require("markdownlint-cli2");
+// eslint-disable-next-line no-useless-concat, node/no-missing-require
+const {readConfig} = require("markdownlint-cli2" + "/markdownlint").promises;
+// eslint-disable-next-line no-useless-concat, node/no-missing-require, unicorn/no-keyword-prefix
+const {applyFix, applyFixes, expandTildePath, newLineRe} = require("markdownlint-cli2" + "/markdownlint/helpers");
 
 // Constants
 const extensionDisplayName = "markdownlint";
@@ -60,9 +66,11 @@ const defaultConfig = {
 };
 
 const clickForInfo = "More information about ";
-const clickToFix = "Fix this violation of ";
+const clickToFixThis = "Fix this violation of ";
+const clickToFixRulePrefix = "Fix all violations of ";
+const inTheDocument = " in the document";
 const fixLineCommandName = "markdownlint.fixLine";
-const fixAllCommandTitle = `Fix all supported ${extensionDisplayName} violations in the document`;
+const fixAllCommandTitle = `Fix all supported ${extensionDisplayName} violations${inTheDocument}`;
 const fixAllCommandName = "markdownlint.fixAll";
 const lintWorkspaceCommandName = "markdownlint.lintWorkspace";
 const openConfigFileCommandName = "markdownlint.openConfigFile";
@@ -297,8 +305,6 @@ class LintWorkspacePseudoterminal {
 	}
 
 	open () {
-		// eslint-disable-next-line unicorn/no-keyword-prefix
-		const {newLineRe} = require("markdownlint/helpers");
 		const logString = (message) => this.writeEmitter.fire(
 			`${message.split(newLineRe).join("\r\n")}\r\n`
 		);
@@ -334,12 +340,10 @@ async function getConfig (fs, configuration, uri) {
 				(userWorkspaceConfigMetadata.globalValue.extends === userWorkspaceConfig.extends)) ||
 			!workspaceFolderUri ||
 			(workspaceFolderUri.scheme !== schemeFile);
-		const os = require("node:os");
 		const homedir = os && os.homedir && os.homedir();
 		const workspaceFolderFsPath = workspaceFolderUri && posixPath(workspaceFolderUri.fsPath);
 		// eslint-disable-next-line multiline-ternary
 		const extendBase = ((useHomedir && homedir) ? homedir : workspaceFolderFsPath) || "";
-		const {expandTildePath} = require("markdownlint/helpers");
 		let expanded = expandTildePath(userWorkspaceConfig.extends, os);
 		if (homedir) {
 			expanded = expanded.replace(/\${userHome}/g, homedir);
@@ -349,8 +353,7 @@ async function getConfig (fs, configuration, uri) {
 		}
 		const extendPath = path.resolve(extendBase, expanded);
 		try {
-			const markdownlint = require("markdownlint").promises;
-			const extendConfig = await markdownlint.readConfig(extendPath, configParsers, fs);
+			const extendConfig = await readConfig(extendPath, configParsers, fs);
 			userWorkspaceConfig = {
 				...extendConfig,
 				...userWorkspaceConfig
@@ -374,8 +377,9 @@ function getIgnores (document) {
 		const configuration = vscode.workspace.getConfiguration(extensionDisplayName, document.uri);
 		const ignoreValue = configuration.get(sectionIgnore);
 		if (Array.isArray(ignoreValue)) {
+			const minimatch = require("minimatch");
 			for (const ignorePath of ignoreValue) {
-				const ignoreRe = require("minimatch").makeRe(ignorePath, {
+				const ignoreRe = minimatch.makeRe(ignorePath, {
 					"dot": true,
 					"nocomment": true
 				});
@@ -479,7 +483,7 @@ function getOptionsOverride () {
 function getNoRequire (scheme) {
 	const isTrusted = vscode.workspace.isTrusted;
 	const isSchemeFile = (scheme === schemeFile);
-	const isDesktop = Boolean(require("node:os").platform());
+	const isDesktop = Boolean(os && os.platform && os.platform());
 	return !isTrusted || !isSchemeFile || !isDesktop;
 }
 
@@ -528,7 +532,6 @@ async function markdownlintWrapper (document) {
 		}
 	};
 	// Invoke markdownlint-cli2
-	const {"main": markdownlintCli2} = require("markdownlint-cli2");
 	return markdownlintCli2(parameters)
 		.catch((error) => outputLine(errorExceptionPrefix + error.stack, true))
 		.then(() => results);
@@ -561,7 +564,6 @@ async function lintWorkspace (logString) {
 			"optionsDefault": await getOptionsDefault(fs, configuration),
 			"optionsOverride": getOptionsOverride()
 		};
-		const {"main": markdownlintCli2} = require("markdownlint-cli2");
 		return markdownlintCli2(parameters)
 			.catch((error) => logString(errorExceptionPrefix + error.stack));
 	}
@@ -655,9 +657,9 @@ function provideCodeActions (document, range, codeActionContext) {
 	for (const diagnostic of extensionDiagnostics) {
 		const ruleName = diagnostic.code.value || diagnostic.code;
 		const ruleNameAlias = diagnostic.message.split(":")[0];
-		// Provide code action to fix the violation
 		if (diagnostic.fixInfo) {
-			const fixTitle = clickToFix + ruleNameAlias;
+			// Provide code action to fix the violation
+			const fixTitle = clickToFixThis + ruleNameAlias;
 			const fixAction = new vscode.CodeAction(fixTitle, codeActionKindQuickFix);
 			fixAction.command = {
 				"title": fixTitle,
@@ -681,14 +683,24 @@ function provideCodeActions (document, range, codeActionContext) {
 				"command": openCommand,
 				"arguments": [ ruleInformationUri ]
 			};
-			infoAction.diagnostics = [ diagnostic ];
 			addToCodeActions(infoAction);
+		}
+		if (diagnostic.fixInfo) {
+			// Provide code action to fix all similar violations
+			const fixTitle = clickToFixRulePrefix + ruleNameAlias + inTheDocument;
+			const fixAction = new vscode.CodeAction(fixTitle, codeActionKindQuickFix);
+			fixAction.command = {
+				"title": fixTitle,
+				"command": fixAllCommandName,
+				"arguments": [ ruleName ]
+			};
+			addToCodeActions(fixAction);
 		}
 	}
 	if (extensionDiagnostics.length > 0) {
 		// eslint-disable-next-line func-style
 		const registerFixAllCodeAction = (codeActionKind) => {
-			// Register a "fix all" code action
+			// Provide code action for fixing all violations
 			const sourceFixAllAction = new vscode.CodeAction(
 				fixAllCommandTitle,
 				codeActionKind
@@ -701,7 +713,7 @@ function provideCodeActions (document, range, codeActionContext) {
 		};
 		registerFixAllCodeAction(codeActionKindSourceFixAllExtension);
 		registerFixAllCodeAction(codeActionKindQuickFix);
-		// Add information about configuring rules
+		// Provide code action for information about configuring rules
 		const configureInfoAction = new vscode.CodeAction(clickForConfigureInfo, codeActionKindQuickFix);
 		configureInfoAction.command = {
 			"title": clickForConfigureInfo,
@@ -718,7 +730,6 @@ function fixLine (lineIndex, fixInfo) {
 	return new Promise((resolve, reject) => {
 		const editor = vscode.window.activeTextEditor;
 		if (editor && fixInfo) {
-			const {applyFix} = require("markdownlint/helpers");
 			const document = editor.document;
 			const lineNumber = fixInfo.lineNumber || (lineIndex + 1);
 			const {text, range} = document.lineAt(lineNumber - 1);
@@ -752,7 +763,7 @@ function fixLine (lineIndex, fixInfo) {
 }
 
 // Fixes all violations in the active document
-function fixAll () {
+function fixAll (ruleNameFilter) {
 	return new Promise((resolve, reject) => {
 		const editor = vscode.window.activeTextEditor;
 		if (editor) {
@@ -760,9 +771,10 @@ function fixAll () {
 			if (isMarkdownDocument(document)) {
 				return markdownlintWrapper(document)
 					.then((errors) => {
-						const {applyFixes} = require("markdownlint/helpers");
 						const text = document.getText();
-						const fixedText = applyFixes(text, errors);
+						const errorsToFix =
+							errors.filter((error) => (!ruleNameFilter || (error.ruleNames[0] === ruleNameFilter)));
+						const fixedText = applyFixes(text, errorsToFix);
 						return (text === fixedText) ?
 							null :
 							editor.edit((editBuilder) => {
@@ -793,7 +805,6 @@ function formatDocument (document, range) {
 						}
 						return false;
 					});
-					const {applyFixes} = require("markdownlint/helpers");
 					const text = document.getText();
 					const fixedText = applyFixes(text, rangeErrors);
 					const start = document.lineAt(0).range.start;
