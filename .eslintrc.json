@@ -34,6 +34,7 @@
         "multiline-comment-style": ["error", "separate-lines"],
         "no-extra-parens": "off",
         "no-magic-numbers": "off",
+        "no-plusplus": "off",
         "no-promise-executor-return": "off",
         "no-sync": "off",
         "no-tabs": "off",
@@ -88,6 +89,7 @@
         "node/prefer-promises/fs": "error",
 
         "unicorn/no-array-push-push": "off",
+        "unicorn/no-array-reduce": "off",
         "unicorn/no-null": "off",
         "unicorn/prefer-module": "off",
         "unicorn/prefer-string-replace-all": "off"

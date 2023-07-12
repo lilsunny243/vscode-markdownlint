@@ -97,10 +97,12 @@ const firstSegmentRe = /^\/{1,2}[^/]+\//;
 // Variables
 const applicationConfiguration = {};
 const ruleNameToInformationUri = {};
+const workspaceFolderUriToDisposables = new Map();
+const workspaceFolderUriToIgnores = new Map();
 let outputChannel = null;
 let diagnosticCollection = null;
+let diagnosticGeneration = 0;
 let runMap = {};
-let ignores = null;
 let lintingEnabled = true;
 const throttle = {
 	"document": null,
@@ -113,18 +115,12 @@ function posixPath (p) {
 	return p.split(path.sep).join(path.posix.sep);
 }
 
-// Gets the workspace folder Uri (if any) for the document Uri (if specified)
-function getWorkspaceFolderUri (documentUri) {
-	if (documentUri) {
-		const workspaceFolder = vscode.workspace.getWorkspaceFolder(documentUri);
-		return workspaceFolder ?
-			workspaceFolder.uri :
-			vscode.Uri.joinPath(documentUri, "..");
-	}
-	const workspaceFolders = vscode.workspace.workspaceFolders;
-	return (workspaceFolders && (workspaceFolders.length > 0)) ?
-		workspaceFolders[0].uri :
-		null;
+// Gets the workspace folder Uri for the document Uri
+function getDocumentWorkspaceFolderUri (documentUri) {
+	const workspaceFolder = vscode.workspace.getWorkspaceFolder(documentUri);
+	return workspaceFolder ?
+		workspaceFolder.uri :
+		vscode.Uri.joinPath(documentUri, "..");
 }
 
 // A Node-like fs object implemented using vscode.workspace.fs
@@ -334,23 +330,20 @@ async function getConfig (fs, configuration, uri) {
 	// Bootstrap extend behavior into readConfig
 	if (userWorkspaceConfig && userWorkspaceConfig.extends) {
 		const userWorkspaceConfigMetadata = configuration.inspect(sectionConfig);
-		const workspaceFolderUri = getWorkspaceFolderUri(uri);
+		const workspaceFolderUri = getDocumentWorkspaceFolderUri(uri);
 		const useHomedir =
 			(userWorkspaceConfigMetadata.globalValue &&
 				(userWorkspaceConfigMetadata.globalValue.extends === userWorkspaceConfig.extends)) ||
-			!workspaceFolderUri ||
 			(workspaceFolderUri.scheme !== schemeFile);
 		const homedir = os && os.homedir && os.homedir();
-		const workspaceFolderFsPath = workspaceFolderUri && posixPath(workspaceFolderUri.fsPath);
+		const workspaceFolderFsPath = posixPath(workspaceFolderUri.fsPath);
 		// eslint-disable-next-line multiline-ternary
 		const extendBase = ((useHomedir && homedir) ? homedir : workspaceFolderFsPath) || "";
 		let expanded = expandTildePath(userWorkspaceConfig.extends, os);
 		if (homedir) {
 			expanded = expanded.replace(/\${userHome}/g, homedir);
 		}
-		if (workspaceFolderFsPath) {
-			expanded = expanded.replace(/\${workspaceFolder}/g, workspaceFolderFsPath);
-		}
+		expanded = expanded.replace(/\${workspaceFolder}/g, workspaceFolderFsPath);
 		const extendPath = path.resolve(extendBase, expanded);
 		try {
 			const extendConfig = await readConfig(extendPath, configParsers, fs);
@@ -370,8 +363,10 @@ async function getConfig (fs, configuration, uri) {
 
 // Returns ignore configuration for user/workspace
 function getIgnores (document) {
-	if (!Array.isArray(ignores)) {
-		ignores = [];
+	const workspaceFolderUri = getDocumentWorkspaceFolderUri(document.uri);
+	if (!workspaceFolderUriToIgnores.has(workspaceFolderUri)) {
+		const ignores = [];
+		workspaceFolderUriToIgnores.set(workspaceFolderUri, ignores);
 		let ignoreFile = ignoreFileName;
 		// Handle "ignore" configuration
 		const configuration = vscode.workspace.getConfiguration(extensionDisplayName, document.uri);
@@ -391,27 +386,24 @@ function getIgnores (document) {
 			ignoreFile = ignoreValue;
 		}
 		// Handle .markdownlintignore
-		const workspaceFolderUri = getWorkspaceFolderUri(document.uri);
-		if (workspaceFolderUri) {
-			const ignoreFileUri = vscode.Uri.joinPath(
-				workspaceFolderUri,
-				ignoreFile
-			);
-			vscode.workspace.fs.stat(ignoreFileUri).then(
-				() => vscode.workspace.fs.readFile(ignoreFileUri).then(
-					(ignoreBytes) => {
-						const ignoreString = new TextDecoder().decode(ignoreBytes);
-						const ignore = require("ignore").default;
-						const ignoreInstance = ignore().add(ignoreString);
-						ignores.push((file) => ignoreInstance.ignores(file));
-						clearDiagnosticsAndLintVisibleFiles();
-					}
-				),
-				() => null
-			);
-		}
+		const ignoreFileUri = vscode.Uri.joinPath(
+			workspaceFolderUri,
+			ignoreFile
+		);
+		vscode.workspace.fs.stat(ignoreFileUri).then(
+			() => vscode.workspace.fs.readFile(ignoreFileUri).then(
+				(ignoreBytes) => {
+					const ignoreString = new TextDecoder().decode(ignoreBytes);
+					const ignore = require("ignore").default;
+					const ignoreInstance = ignore().add(ignoreString);
+					ignores.push((file) => ignoreInstance.ignores(file));
+					clearDiagnosticsAndLintVisibleFiles();
+				}
+			),
+			() => null
+		);
 	}
-	return ignores;
+	return workspaceFolderUriToIgnores.get(workspaceFolderUri);
 }
 
 // Clears the ignore list
@@ -420,7 +412,7 @@ function clearIgnores (eventUri) {
 		`"${eventUri.fsPath}"` :
 		"setting";
 	outputLine(`INFO: Resetting ignore cache due to ${source} change.`);
-	ignores = null;
+	workspaceFolderUriToIgnores.clear();
 	if (eventUri) {
 		clearDiagnosticsAndLintVisibleFiles();
 	}
@@ -493,7 +485,7 @@ async function markdownlintWrapper (document) {
 	const scheme = document.uri.scheme;
 	const independentDocument = !schemeFileSystemLike.has(scheme);
 	const name = posixPath(document.uri.fsPath);
-	const workspaceFolderUri = getWorkspaceFolderUri(document.uri);
+	const workspaceFolderUri = getDocumentWorkspaceFolderUri(document.uri);
 	const fs = independentDocument ?
 		new FsNull() :
 		new FsWrapper(workspaceFolderUri);
@@ -501,9 +493,7 @@ async function markdownlintWrapper (document) {
 	const config = await getConfig(fs, configuration, document.uri);
 	const directory = independentDocument ?
 		null :
-		(workspaceFolderUri ?
-			posixPath(workspaceFolderUri.fsPath) :
-			path.posix.dirname(name));
+		posixPath(workspaceFolderUri.fsPath);
 	const argv = independentDocument ?
 		[] :
 		[ `:${name}` ];
@@ -548,26 +538,33 @@ function isMarkdownDocument (document) {
 }
 
 // Lints Markdown files in the workspace folder tree
-async function lintWorkspace (logString) {
-	const workspaceFolderUri = getWorkspaceFolderUri();
-	if (workspaceFolderUri) {
-		const configuration = vscode.workspace.getConfiguration(extensionDisplayName, workspaceFolderUri);
-		const fs = new FsWrapper(workspaceFolderUri);
-		const parameters = {
-			fs,
-			"argv": configuration.get(sectionLintWorkspaceGlobs),
-			"directory": posixPath(workspaceFolderUri.fsPath),
-			"logMessage": logString,
-			"logError": logString,
-			"noErrors": true,
-			"noRequire": getNoRequire(workspaceFolderUri.scheme),
-			"optionsDefault": await getOptionsDefault(fs, configuration),
-			"optionsOverride": getOptionsOverride()
-		};
-		return markdownlintCli2(parameters)
-			.catch((error) => logString(errorExceptionPrefix + error.stack));
-	}
-	throw new Error("No workspace folder.");
+function lintWorkspace (logString) {
+	const workspaceFolderUris = (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri);
+	return workspaceFolderUris.reduce(
+		(previousPromise, workspaceFolderUri) => previousPromise.then(() => {
+			logString(`Linting workspace folder "${workspaceFolderUri.toString()}"...`);
+			const fs = new FsWrapper(workspaceFolderUri);
+			const configuration = vscode.workspace.getConfiguration(extensionDisplayName, workspaceFolderUri);
+			return getOptionsDefault(fs, configuration)
+				.then((optionsDefault) => {
+					const parameters = {
+						fs,
+						"argv": configuration.get(sectionLintWorkspaceGlobs),
+						"directory": posixPath(workspaceFolderUri.fsPath),
+						"logMessage": logString,
+						"logError": logString,
+						"noErrors": true,
+						"noRequire": getNoRequire(workspaceFolderUri.scheme),
+						optionsDefault,
+						"optionsOverride": getOptionsOverride()
+					};
+					return markdownlintCli2(parameters)
+						.catch((error) => logString(errorExceptionPrefix + error.stack))
+						.then(() => logString(""));
+				});
+		}),
+		Promise.resolve()
+	);
 }
 
 // Runs the lintWorkspace task to lint all Markdown files in the workspace
@@ -586,9 +583,10 @@ function lint (document) {
 	if (!lintingEnabled || !isMarkdownDocument(document)) {
 		return;
 	}
-	// Check ignore list
 	const diagnostics = [];
 	let task = Promise.resolve();
+	const targetGeneration = diagnosticGeneration;
+	// Check ignore list
 	const relativePath = vscode.workspace.asRelativePath(document.uri, false);
 	const normalizedPath = relativePath.split(path.sep).join("/");
 	if (getIgnores(document).every((ignoreTest) => !ignoreTest(normalizedPath))) {
@@ -640,7 +638,11 @@ function lint (document) {
 			});
 	}
 	// Publish
-	task.then(() => diagnosticCollection.set(document.uri, diagnostics));
+	task.then(() => {
+		if (targetGeneration === diagnosticGeneration) {
+			diagnosticCollection.set(document.uri, diagnostics);
+		}
+	});
 }
 
 // Implements CodeActionsProvider.provideCodeActions to provide information and fix rule violations
@@ -819,10 +821,10 @@ function formatDocument (document, range) {
 	});
 }
 
-// Creates or opens the markdownlint configuration file for the workspace
+// Creates or opens the markdownlint configuration file for each workspace
 function openConfigFile () {
-	const workspaceFolderUri = getWorkspaceFolderUri();
-	if (workspaceFolderUri) {
+	const workspaceFolderUris = (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri);
+	for (const workspaceFolderUri of workspaceFolderUris) {
 		Promise.all(configFileNames.map((configFileName) => {
 			const fileUri = vscode.Uri.joinPath(workspaceFolderUri, configFileName);
 			return vscode.workspace.fs.stat(fileUri).then(
@@ -865,6 +867,7 @@ function clearDiagnosticsAndLintVisibleFiles (eventUri) {
 		outputLine(`INFO: Re-linting due to "${eventUri.fsPath}" change.`);
 	}
 	diagnosticCollection.clear();
+	diagnosticGeneration++;
 	lintVisibleFiles();
 }
 
@@ -991,6 +994,53 @@ function didGrantWorkspaceTrust () {
 	didChangeConfiguration();
 }
 
+// Creates all file system watchers for the specified workspace folder Uri
+function createFileSystemWatchers (workspaceFolderUri) {
+	disposeFileSystemWatchers(workspaceFolderUri);
+	const relativeConfigFileGlob = new vscode.RelativePattern(workspaceFolderUri, "**/" + configFileGlob);
+	const configWatcher = vscode.workspace.createFileSystemWatcher(relativeConfigFileGlob);
+	const relativeOptionsFileGlob = new vscode.RelativePattern(workspaceFolderUri, "**/" + optionsFileGlob);
+	const optionsWatcher = vscode.workspace.createFileSystemWatcher(relativeOptionsFileGlob);
+	const relativeIgnoreFilePath = new vscode.RelativePattern(workspaceFolderUri, ignoreFileName);
+	const ignoreWatcher = vscode.workspace.createFileSystemWatcher(relativeIgnoreFilePath);
+	workspaceFolderUriToDisposables.set(
+		workspaceFolderUri,
+		[
+			configWatcher,
+			configWatcher.onDidCreate(clearDiagnosticsAndLintVisibleFiles),
+			configWatcher.onDidChange(clearDiagnosticsAndLintVisibleFiles),
+			configWatcher.onDidDelete(clearDiagnosticsAndLintVisibleFiles),
+			optionsWatcher,
+			optionsWatcher.onDidCreate(clearDiagnosticsAndLintVisibleFiles),
+			optionsWatcher.onDidChange(clearDiagnosticsAndLintVisibleFiles),
+			optionsWatcher.onDidDelete(clearDiagnosticsAndLintVisibleFiles),
+			ignoreWatcher,
+			ignoreWatcher.onDidCreate(clearIgnores),
+			ignoreWatcher.onDidChange(clearIgnores),
+			ignoreWatcher.onDidDelete(clearIgnores)
+		]
+	);
+}
+
+// Disposes of all file system watchers for the specified workspace folder Uri
+function disposeFileSystemWatchers (workspaceFolderUri) {
+	const disposables = workspaceFolderUriToDisposables.get(workspaceFolderUri) || [];
+	for (const disposable of disposables) {
+		disposable.dispose();
+	}
+	workspaceFolderUriToDisposables.delete(workspaceFolderUri);
+}
+
+// Handles the onDidChangeWorkspaceFolders event
+function didChangeWorkspaceFolders (changes) {
+	for (const workspaceFolderUri of changes.removed.map((folder) => folder.uri)) {
+		disposeFileSystemWatchers(workspaceFolderUri);
+	}
+	for (const workspaceFolderUri of changes.added.map((folder) => folder.uri)) {
+		createFileSystemWatchers(workspaceFolderUri);
+	}
+}
+
 function activate (context) {
 	// Create OutputChannel
 	outputChannel = vscode.window.createOutputChannel(extensionDisplayName);
@@ -1009,7 +1059,8 @@ function activate (context) {
 		vscode.workspace.onDidSaveTextDocument(didSaveTextDocument),
 		vscode.workspace.onDidCloseTextDocument(didCloseTextDocument),
 		vscode.workspace.onDidChangeConfiguration(didChangeConfiguration),
-		vscode.workspace.onDidGrantWorkspaceTrust(didGrantWorkspaceTrust)
+		vscode.workspace.onDidGrantWorkspaceTrust(didGrantWorkspaceTrust),
+		vscode.workspace.onDidChangeWorkspaceFolders(didChangeWorkspaceFolders)
 	);
 
 	// Register CodeActionsProvider
@@ -1082,37 +1133,20 @@ function activate (context) {
 	context.subscriptions.push(diagnosticCollection);
 
 	// Hook up to file system changes for custom config file(s)
-	const workspaceFolderUri = getWorkspaceFolderUri();
-	if (workspaceFolderUri) {
-		const relativeConfigFileGlob = new vscode.RelativePattern(workspaceFolderUri, "**/" + configFileGlob);
-		const configWatcher = vscode.workspace.createFileSystemWatcher(relativeConfigFileGlob);
-		context.subscriptions.push(
-			configWatcher,
-			configWatcher.onDidCreate(clearDiagnosticsAndLintVisibleFiles),
-			configWatcher.onDidChange(clearDiagnosticsAndLintVisibleFiles),
-			configWatcher.onDidDelete(clearDiagnosticsAndLintVisibleFiles)
-		);
-		const relativeOptionsFileGlob = new vscode.RelativePattern(workspaceFolderUri, "**/" + optionsFileGlob);
-		const optionsWatcher = vscode.workspace.createFileSystemWatcher(relativeOptionsFileGlob);
-		context.subscriptions.push(
-			optionsWatcher,
-			optionsWatcher.onDidCreate(clearDiagnosticsAndLintVisibleFiles),
-			optionsWatcher.onDidChange(clearDiagnosticsAndLintVisibleFiles),
-			optionsWatcher.onDidDelete(clearDiagnosticsAndLintVisibleFiles)
-		);
-		const relativeIgnoreFilePath = new vscode.RelativePattern(workspaceFolderUri, ignoreFileName);
-		const ignoreWatcher = vscode.workspace.createFileSystemWatcher(relativeIgnoreFilePath);
-		context.subscriptions.push(
-			ignoreWatcher,
-			ignoreWatcher.onDidCreate(clearIgnores),
-			ignoreWatcher.onDidChange(clearIgnores),
-			ignoreWatcher.onDidDelete(clearIgnores)
-		);
-	}
+	didChangeWorkspaceFolders({
+		"added": vscode.workspace.workspaceFolders || [],
+		"removed": []
+	});
 
-	// Cancel any pending operations during deactivation
+	// Cancel any pending operations and dispose of all file system watchers during deactivation
 	context.subscriptions.push({
-		"dispose": () => suppressLint(throttle.document)
+		"dispose": () => {
+			suppressLint(throttle.document);
+			didChangeWorkspaceFolders({
+				"added": [],
+				"removed": vscode.workspace.workspaceFolders || []
+			});
+		}
 	});
 
 	// Lint all visible documents
