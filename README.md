@@ -116,6 +116,7 @@ The following rules can be automatically fixed by moving the cursor to a rule vi
 * MD047 *single-trailing-newline*
 * MD049 *emphasis-style*
 * MD050 *strong-style*
+* MD051 *link-fragments*
 * MD053 *link-image-reference-definitions*
 
 ## Commands
@@ -125,7 +126,7 @@ The following rules can be automatically fixed by moving the cursor to a rule vi
 All of a document's violations of the above rules can be fixed automatically.
 
 `markdownlint` registers itself as a [source code formatter](https://code.visualstudio.com/docs/editor/codebasics#_formatting) for Markdown files and can be invoked by the `Format Document`/`editor.action.formatDocument` and `Format Selection`/`editor.action.formatSelection` commands, either from the [Command Palette](https://code.visualstudio.com/docs/getstarted/userinterface#_command-palette) (via `View|Command Palette...` or `Ctrl+Shift+P`/`Ctrl+Shift+P`/`⇧⌘P`) or via the default key bindings of `Shift+Alt+F`/`Ctrl+Shift+I`/`⇧⌥F` (to format the document) and `Ctrl+K Ctrl+F`/`Ctrl+K Ctrl+F`/`⌘K ⌘F` (to format the selection).
-To automatically format when saving or pasting into a Markdown document, [configure Visual Studio Code's `editor.formatOnSave` or `editor.formatOnPaste` settings](https://code.visualstudio.com/docs/getstarted/settings) like so:
+To automatically format when saving or pasting into a Markdown document, [configure Visual Studio Code's `editor.formatOnSave` or `editor.formatOnPaste` settings](https://code.visualstudio.com/docs/getstarted/settings#_language-specific-editor-settings) like so:
 
 ```json
 "[markdown]": {
@@ -314,7 +315,7 @@ The globbing library used for matching `markdownlint.ignore` array values is [mi
 
 Custom rules can be specified in Code's user/workspace configuration to apply additional linting beyond the default set of rules. Custom rules are specified by the path to a JavaScript file or the name of or path to an [npm](https://www.npmjs.com/) package exporting one rule or an array of rules ([examples of custom rules](https://www.npmjs.com/search?q=keywords:markdownlint-rule)).
 
-Paths are typically relative to the root of the current workspace (or the user's home directory when no folder is open) and should begin with `./` to [differentiate the relative path from a module identifier](https://nodejs.org/dist/latest-v14.x/docs/api/modules.html#modules_file_modules). Paths can be absolute and begin with `/`, though this is discouraged because it does not work reliably across different machines. If implementing custom rules in a workspace, consider committing the rule code under the `.vscode` directory where it will be separate from other workspace content and available to everyone who clones the repository. Paths of the form `{extension}/path` are relative to the base directory of the Code extension named `extension` (which must already be installed). This syntax allows custom rules to be included within another extension's package, though this is discouraged because it introduces a subtle dependency on the other extension.
+Paths are typically relative to the root of the current workspace (or the user's home directory when no folder is open) and should begin with `./` to [differentiate the relative path from a module identifier](https://nodejs.org/docs/latest-v18.x/api/modules.html#file-modules). Paths can be absolute and begin with `/`, though this is discouraged because it does not work reliably across different machines. If implementing custom rules in a workspace, consider committing the rule code under the `.vscode` directory where it will be separate from other workspace content and available to everyone who clones the repository. Paths of the form `{extension}/path` are relative to the base directory of the Code extension named `extension` (which must already be installed). This syntax allows custom rules to be included within another extension's package, though this is discouraged because it introduces a subtle dependency on the other extension.
 
 An example of Code's workspace settings for custom rules might look like the following:
 
